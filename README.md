@@ -1,0 +1,208 @@
+# tfrefactor
+
+Safe, verifiable LLM-native refactoring for Terraform. The core promise:
+**you can refactor Terraform without fear that production changes.**
+
+Every refactor operation produces a written verdict before anything touches
+disk: `VERIFIED_NOOP`, `VERIFIED_WITH_CAVEATS`, `NOT_VERIFIED`, or
+`HUMAN_REVIEW_REQUIRED`. If the tool can't prove a refactor is a no-op, it
+says so explicitly instead of guessing - that's the whole point.
+
+```
+tfrefactor scan tests/fixtures/messy_project
+tfrefactor propose rename tests/fixtures/messy_project --address aws_instance.web --to web_server
+tfrefactor propose extract-module tests/fixtures/messy_project \
+    --addresses aws_sqs_queue.orders_queue,aws_sqs_queue.orders_dlq,aws_cloudwatch_log_group.orders,aws_iam_role.orders_exec \
+    --module-name orders --apply
+tfrefactor unify-duplicates tests/fixtures/messy_project envs/dev envs/prod
+```
+
+## Non-negotiables (enforced in code, not just documented)
+
+1. **Correctness over cleverness.** If the verifier can't prove a refactor
+   is a no-op, it never returns a bare pass - it returns `NOT_VERIFIED` with
+   the specific blocker, or `VERIFIED_WITH_CAVEATS` with the specific
+   assumption you'd need to confirm (e.g. "assuming nothing overrides this
+   variable's default").
+2. **Never touches state.** All operations are `.tf` source edits. State
+   migrations are printed as `terraform plan`/`terraform state` commands for
+   the engineer to run - never executed by this tool.
+3. **Human review required for every change.** `propose --apply` refuses to
+   write anything for `NOT_VERIFIED` or `HUMAN_REVIEW_REQUIRED` results
+   unless you pass `--force-unverified` / `--confirm-human-review`
+   explicitly, and even then only `.tf` files are touched.
+4. **Works with real-world messy Terraform** - see the fixture at
+   `tests/fixtures/messy_project`, which deliberately includes multi-provider
+   aliasing, a `random_id` feeding a resource name, `dynamic` blocks,
+   `for_each` over a `data` source, heredocs, and a 15-service, 586-line
+   god-file.
+
+## What defeats naive "same resources, same attributes" graph comparison
+
+This is the question that matters most, because a tool that gets this wrong
+is worse than no tool - it gives false confidence. Each of these is handled
+explicitly in `verify.py`, not left as a gap:
+
+- **`moved` blocks.** A renamed/relocated resource has a different address
+  but is the same resource. The verifier resolves identity through the
+  moved-block alias map in both directions - including inside attribute
+  *references* elsewhere in the config (e.g. `aws_instance.web.id` becoming
+  `module.compute.aws_instance.web.id`).
+- **Volatile resources** (`random_id`, `random_password`, `tls_private_key`,
+  `time_static`, ...). A `moved` block prevents recreation and preserves the
+  value. A rename *without* one silently regenerates the value and cascades
+  to every downstream consumer - a plain "same attributes" diff would miss
+  this entirely since the *declared* attributes never changed, only the
+  resulting value would. We detect this resource-type class specifically and
+  flag it even when a moved block is present (as a caveat: "confirm with a
+  real plan").
+- **`count` <-> `for_each` conversion.** Changes instance keys
+  (`foo[0]` -> `foo["a"]`) even when the final instance set is identical.
+  Never a no-op without a moved block per instance, which Terraform doesn't
+  let us synthesize generically - always flagged as a blocker.
+- **Provider aliasing.** Moving a resource with an explicit
+  `provider = aws.west` into a module silently falls back to the module's
+  default provider unless the module call passes a `providers = {}` map.
+  Attribute-level diffing can't see this - it's a structural property of the
+  module call, so we check it explicitly.
+- **`for_each` over a `data` source.** Membership can change between plan
+  and apply in ways static analysis can't observe. Surfaced as a caveat on
+  every diff that touches such a resource, not silently passed.
+- **Stale `moved` blocks from a previous, already-applied refactor.**
+  Terraform keeps `moved` blocks around indefinitely (so very old configs
+  can still adopt state), which means a moved block from refactor #1 is
+  still sitting in the repo when you run refactor #2. Blindly trusting every
+  moved block in the file would misattribute an unrelated diff. We only
+  trust a mapping whose `from` address is actually present in the *current*
+  before-graph.
+- **Module input threading vs. variable defaults - two different
+  guarantees.** When "parameterize hardcoded value" replaces a literal with
+  `var.X` defaulted to that literal, the guarantee is conditional ("unless
+  something overrides this at apply time" - static analysis can't see
+  `-var`/tfvars), so it's a caveat. When "extract module" threads an
+  external reference through as a *required* module input, the call site's
+  expression is generated by the tool itself and is statically exact - a
+  stronger, unconditional guarantee. Collapsing these into one mechanism
+  would either be dishonestly confident or needlessly conservative; they're
+  handled as two distinct resolution paths in `verify.py`.
+- **A literal string that merely contains dots isn't a reference.** e.g.
+  `Principal = { Service = "lambda.amazonaws.com" }` inside a JSON-encoded
+  IAM policy. Early versions of the extract-module reference scanner treated
+  any dotted identifier chain as a candidate reference and tried to thread
+  it through as a module variable. Fixed by requiring the token's base
+  address to match an actually-known symbol (a real resource/data/var/local
+  in the graph) before treating it as external.
+
+## Safety escape hatches
+
+The tool always does one of four things - it never silently guesses:
+
+| Verdict | Meaning | `--apply` behavior |
+|---|---|---|
+| `VERIFIED_NOOP` | Graph-provable, no caveats | applies |
+| `VERIFIED_WITH_CAVEATS` | Provable modulo a stated, specific assumption (var override, volatile-type relocation, data-source `for_each` membership) | applies, prints the caveat |
+| `NOT_VERIFIED` | Graph differs, or a known-unsafe pattern detected (count/for_each conversion, missing provider passthrough, unrecorded rename) | refuses unless `--force-unverified`, always prints the specific blocker and a recommended manual command (`terraform plan -out=tfplan`) |
+| `HUMAN_REVIEW_REQUIRED` | Correct by construction isn't enough - the change requires a judgment call no static analysis can make (removing "dead" code, choosing which attributes are truly environment-specific in unify-duplicates) | refuses unless `--confirm-human-review` |
+
+Dead-code removal is **always** `HUMAN_REVIEW_REQUIRED`, regardless of how
+confident the reference graph looks - removing a declared resource is never
+a provable no-op against real infrastructure (it's a destroy if the resource
+is in state), and static analysis can't see whether something outside the
+repo depends on it. Unify-duplicates is likewise always
+`HUMAN_REVIEW_REQUIRED` - deciding which attributes are "environment-specific"
+vs. "coincidentally equal today" is a judgment call about intent, not a fact
+derivable from source.
+
+## Architecture
+
+- **`blocksplit.py`** - a brace/string/heredoc/comment-aware scanner that
+  finds exact source spans for every top-level HCL block (resource, data,
+  module, variable, output, provider, locals, moved) without a full grammar.
+  This is what lets refactors cut and paste *exact original text* instead of
+  round-tripping through a lossy AST/pretty-printer. 100% roundtrip-lossless
+  on the test fixtures (see `test_blocksplit.py`).
+- **`graph.py`** - semantic parsing via `python-hcl2`, correlated with
+  `blocksplit` spans by address. Builds a resource graph (resources, data
+  sources, variables, outputs, providers, module calls, moved blocks) and
+  recursively resolves *locally-sourced* module calls so a resource living
+  inside `module.orders` is addressed exactly as Terraform would address it:
+  `module.orders.aws_sqs_queue.queue`. Remote/registry module sources are
+  not expanded (out of scope for static verification - correctly deferred to
+  human review rather than silently ignored).
+- **`verify.py`** - the no-op proof engine described above.
+- **`anti_patterns.py`** - advisory-only static scan (hardcoded regions/AMIs/
+  secrets, missing provider version pins, god-files, dead-code candidates).
+  Separate from refactor verification; nothing here blocks a proposal.
+- **`refactors/`** - one module per operation, each producing a `Proposal`
+  (a set of full-file writes + deletions, never a partial patch - this keeps
+  staging and application unambiguous): `rename_backfill`, `parameterize`,
+  `split_god_file`, `extract_module`, `dead_code`, `unify_duplicates`.
+- **`cli.py`** - `tfrefactor scan|propose|unify-duplicates|verify`.
+
+## Why pure Python instead of the Go/HCL2-binary split
+
+The original plan called for a Go binary wrapping HashiCorp's HCL2 parser,
+invoked from a Python orchestrator. No Go toolchain was available in this
+environment, and `python-hcl2` (which wraps the same grammar via a Lark
+parser) covers the semantic-parsing needs directly. Given a fixed time
+budget, that removed a language boundary and an IPC layer for zero loss of
+capability here, in exchange for effort spent on the verification harness -
+which is the actual differentiator. Revisiting this trade-off (a native Go
+binary calling `hashicorp/hcl` directly) is reasonable once performance on
+very large codebases matters; see roadmap.
+
+## What's NOT in this build (by design, given the time box)
+
+- **Web dashboard / Postgres / team mode.** Explicitly deprioritized in favor
+  of making the verification engine correct on real gotchas, since a
+  polished UI over a naive verifier would be actively misleading.
+- **`terraform plan` diffing against a real workspace.** The static graph
+  proof is implemented; shelling out to a real `terraform plan -out=... &&
+  terraform show -json` and diffing the JSON plan is the natural "optional"
+  extension mentioned in the spec, deferred to the roadmap below.
+- **GitHub Action.** A `tfrefactor scan` step is trivial to wire into CI
+  (see `.github/workflows/tfrefactor.yml`); a full propose-as-PR bot is
+  roadmap.
+
+## Roadmap (next 3 weeks past this MVP)
+
+**Week 1 - real-plan verification & CI integration.** Add an opt-in mode
+that runs `terraform plan -out=tfplan && terraform show -json tfplan`
+before and after a proposed refactor against a real (disposable) workspace,
+and diffs the JSON plan's `resource_changes` as a second, empirical proof
+layered on top of the static graph proof - closing the "we can't see what
+Terraform actually resolves" gap for data sources and provider-specific
+computed attributes. Ship the GitHub Action that runs `scan` on every PR and
+posts findings as a comment.
+
+**Week 2 - harden extract-module and unify-duplicates for messier real
+repos.** Handle remote module sources (registry/git) by treating anything
+inside them as an opaque boundary with an explicit "can't verify past this
+point" marker rather than silently stopping at the edge. Add nested-module
+recursion depth handling and multi-instance (`count`/`for_each`) resource
+extraction (currently single-instance only). Extend unify-duplicates'
+structural matching beyond exact `(type, name)` pairing to near-duplicate
+detection via attribute-shape hashing, for duplicates that aren't named
+identically across environments.
+
+**Week 3 - LLM-assisted proposal generation + web dashboard MVP.** Wire
+Claude in front of the existing operations: given a scanned codebase, have
+it choose which resources form a logical module, which duplicates to unify,
+and what to name things - then hand off to the existing deterministic
+`propose_*` functions and verifier for the actual mechanical work and proof.
+This is the right division of labor: LLM for judgment/naming, deterministic
+code for correctness. Stand up the read-only web dashboard for browsing
+proposals and their verification reports (Next.js, reading from local SQLite
+- Postgres/team-mode stays deferred further).
+
+## Running the tests
+
+```
+pip install -e ".[dev]"
+pytest
+```
+
+35 tests cover: block-splitter roundtrip fidelity on real messy fixtures,
+reference/provider/for_each extraction, all four verdict classes (including
+the stale-moved-block regression), and every refactor operation end-to-end
+through the verifier.

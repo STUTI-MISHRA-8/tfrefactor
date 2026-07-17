@@ -1,0 +1,27 @@
+[project]
+name = "tfrefactor"
+version = "0.1.0"
+description = "Safe, verifiable LLM-native refactoring for Terraform"
+requires-python = ">=3.11"
+dependencies = [
+    "python-hcl2>=8.1",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+tfrefactor = "tfrefactor.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["tfrefactor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
