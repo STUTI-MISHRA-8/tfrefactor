@@ -232,3 +232,21 @@ reference/provider/for_each extraction, all four verdict classes (including
 the stale-moved-block regression), every refactor operation end-to-end
 through the verifier, and the dashboard's API (confirmed to never write to
 the original files, even when a proposal is generated and verified).
+
+## Maintainer notes: two pending one-time setup steps
+
+Both are optional - the repo and the live dashboard work fully without
+them - and both require a one-time browser action, so they aren't scripted
+here:
+
+1. **CI workflow isn't pushed yet.** `.github/workflows/tfrefactor.yml`
+   (runs `tfrefactor scan` on every PR) sits untracked locally because the
+   `gh` CLI token lacks the `workflow` OAuth scope. To fix: run
+   `gh auth refresh -h github.com -s workflow`, authorize the device code at
+   https://github.com/login/device, then `git add .github && git commit -m
+   "Add CI workflow" && git push`.
+2. **Vercel isn't auto-deploying on push yet.** Deploys are manual today
+   (`vercel --prod`). To enable auto-deploy: connect GitHub as a login
+   method at https://vercel.com/account/login-connections, then run
+   `vercel git connect https://github.com/STUTI-MISHRA-8/tfrefactor.git`
+   from this directory.
