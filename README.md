@@ -17,6 +17,19 @@ tfrefactor propose extract-module tests/fixtures/messy_project \
 tfrefactor unify-duplicates tests/fixtures/messy_project envs/dev envs/prod
 ```
 
+## Dashboard
+
+```
+pip install -e ".[web]"
+tfrefactor dashboard
+```
+
+Opens a local, **read-only** dashboard (FastAPI + a single dependency-free
+HTML/JS page, no Node toolchain) for browsing scan findings and refactor
+proposals with their verification verdicts. There is deliberately no "apply"
+button anywhere in it - applying a refactor stays a `tfrefactor propose ...
+--apply` action on the CLI, per non-negotiable #3. See `tfrefactor/web/`.
+
 ## Non-negotiables (enforced in code, not just documented)
 
 1. **Correctness over cleverness.** If the verifier can't prove a refactor
@@ -153,9 +166,8 @@ very large codebases matters; see roadmap.
 
 ## What's NOT in this build (by design, given the time box)
 
-- **Web dashboard / Postgres / team mode.** Explicitly deprioritized in favor
-  of making the verification engine correct on real gotchas, since a
-  polished UI over a naive verifier would be actively misleading.
+- **Postgres / team mode.** The dashboard above covers local browsing;
+  multi-user persistence is deferred (see roadmap).
 - **`terraform plan` diffing against a real workspace.** The static graph
   proof is implemented; shelling out to a real `terraform plan -out=... &&
   terraform show -json` and diffing the JSON plan is the natural "optional"
@@ -185,24 +197,27 @@ structural matching beyond exact `(type, name)` pairing to near-duplicate
 detection via attribute-shape hashing, for duplicates that aren't named
 identically across environments.
 
-**Week 3 - LLM-assisted proposal generation + web dashboard MVP.** Wire
-Claude in front of the existing operations: given a scanned codebase, have
-it choose which resources form a logical module, which duplicates to unify,
-and what to name things - then hand off to the existing deterministic
-`propose_*` functions and verifier for the actual mechanical work and proof.
-This is the right division of labor: LLM for judgment/naming, deterministic
-code for correctness. Stand up the read-only web dashboard for browsing
-proposals and their verification reports (Next.js, reading from local SQLite
-- Postgres/team-mode stays deferred further).
+**Week 3 - LLM-assisted proposal generation + team mode.** Wire Claude in
+front of the existing operations: given a scanned codebase, have it choose
+which resources form a logical module, which duplicates to unify, and what
+to name things - then hand off to the existing deterministic `propose_*`
+functions and verifier for the actual mechanical work and proof. This is the
+right division of labor: LLM for judgment/naming, deterministic code for
+correctness. Grow the read-only dashboard (already built, see above) into a
+persisted, multi-user one - swap the in-memory per-request scan/propose
+calls for a job queue backed by Postgres, so proposals and their
+verification reports can be reviewed asynchronously by a team rather than
+generated fresh in the browser each time.
 
 ## Running the tests
 
 ```
-pip install -e ".[dev]"
+pip install -e ".[dev,web]"
 pytest
 ```
 
-35 tests cover: block-splitter roundtrip fidelity on real messy fixtures,
+43 tests cover: block-splitter roundtrip fidelity on real messy fixtures,
 reference/provider/for_each extraction, all four verdict classes (including
-the stale-moved-block regression), and every refactor operation end-to-end
-through the verifier.
+the stale-moved-block regression), every refactor operation end-to-end
+through the verifier, and the dashboard's API (confirmed to never write to
+the original files, even when a proposal is generated and verified).

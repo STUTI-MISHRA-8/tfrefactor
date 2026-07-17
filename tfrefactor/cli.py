@@ -38,6 +38,19 @@ def main():
 
 
 @main.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8765, show_default=True)
+def dashboard(host, port):
+    """Launch the local read-only dashboard (browse scan/propose results)."""
+    try:
+        import uvicorn
+    except ImportError:
+        raise click.ClickException("dashboard requires the 'web' extra: pip install -e '.[web]'")
+    click.echo(f"Serving dashboard at http://{host}:{port} (read-only - nothing here writes to disk)")
+    uvicorn.run("tfrefactor.web.app:app", host=host, port=port)
+
+
+@main.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False))
 @click.option("--god-file-threshold", default=500, show_default=True, help="Line count to flag a file as a god-file.")
 def scan(directory, god_file_threshold):

@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>tfrefactor dashboard</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #161d2e; --panel-border: #263049;
+    --text: #e6e9f0; --muted: #8b95ab; --accent: #6ea8fe;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149; --blue: #58a6ff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header { padding: 20px 28px 8px; border-bottom: 1px solid var(--panel-border); }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0 0 16px; color: var(--muted); }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 28px 60px; display: flex; flex-direction: column; gap: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 18px 20px; }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; color: var(--accent); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  label { color: var(--muted); font-size: 12px; }
+  select, input, button {
+    background: #0d1220; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: inherit;
+  }
+  input[type="text"] { min-width: 260px; }
+  button { cursor: pointer; background: var(--accent); color: #061024; border: none; font-weight: 600; }
+  button.secondary { background: #0d1220; color: var(--text); border: 1px solid var(--panel-border); font-weight: 500; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em; }
+  .sev-high, .sev-blocker { background: rgba(248,81,73,.18); color: var(--red); }
+  .sev-medium, .sev-caveat { background: rgba(210,153,34,.18); color: var(--yellow); }
+  .sev-low, .sev-info { background: rgba(88,166,255,.18); color: var(--blue); }
+  .verdict-VERIFIED_NOOP { background: rgba(63,185,80,.18); color: var(--green); }
+  .verdict-VERIFIED_WITH_CAVEATS { background: rgba(210,153,34,.18); color: var(--yellow); }
+  .verdict-NOT_VERIFIED { background: rgba(248,81,73,.18); color: var(--red); }
+  .verdict-HUMAN_REVIEW_REQUIRED { background: rgba(210,153,34,.18); color: var(--yellow); }
+  .verdict-big { font-size: 14px; padding: 4px 12px; }
+  .hidden { display: none !important; }
+  .muted { color: var(--muted); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  details { margin-top: 10px; border-top: 1px solid var(--panel-border); padding-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  pre { background: #0a0e18; border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; overflow-x: auto; font-size: 12px; }
+  .file-block { margin-top: 8px; }
+  .file-block .path { color: var(--accent); font-size: 12.5px; margin-bottom: 4px; }
+  .op-fields > div { margin-bottom: 8px; }
+  .empty { color: var(--muted); font-style: italic; padding: 10px 0; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .checklist { max-height: 160px; overflow-y: auto; border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px; }
+  .checklist label { display: block; color: var(--text); font-size: 12.5px; padding: 2px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>tfrefactor</h1>
+  <p>Read-only dashboard: browse scan findings and refactor proposals with their verification verdicts. Nothing here writes to disk - applying a refactor stays a deliberate <span class="mono">tfrefactor propose ... --apply</span> action.</p>
+</header>
+
+<main>
+
+  <section class="panel">
+    <h2>1. Target directory</h2>
+    <div class="row">
+      <div class="field">
+        <label>Preset</label>
+        <select id="presetSelect"><option value="">(loading presets...)</option></select>
+      </div>
+      <div class="field">
+        <label>or custom path</label>
+        <input type="text" id="customPath" placeholder="C:\path\to\terraform\module" />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button id="loadBtn">Load</button>
+      </div>
+    </div>
+    <div id="loadStatus" class="note"></div>
+  </section>
+
+  <section class="panel">
+    <h2>2. Scan for anti-patterns</h2>
+    <div class="row">
+      <div class="field">
+        <label>god-file line threshold</label>
+        <input type="text" id="scanThreshold" value="500" style="width:80px" />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button id="scanBtn" disabled>Run scan</button>
+      </div>
+    </div>
+    <div id="scanSummary" class="note"></div>
+    <div id="scanResults"></div>
+  </section>
+
+  <section class="panel">
+    <h2>3. Propose a refactor (verified, never applied)</h2>
+    <div class="row">
+      <div class="field">
+        <label>operation</label>
+        <select id="opSelect">
+          <option value="rename">rename + moved backfill</option>
+          <option value="parameterize">parameterize hardcoded value</option>
+          <option value="split-file">split god-file</option>
+          <option value="extract-module">extract module</option>
+          <option value="dead-code">remove dead code</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="op-fields">
+      <div id="fields-rename">
+        <div class="field"><label>resource address</label><select class="addr-select"></select></div>
+        <div class="field"><label>new name</label><input type="text" id="renameTo" placeholder="web_server" /></div>
+      </div>
+      <div id="fields-parameterize" class="hidden">
+        <div class="field"><label>resource address</label><select class="addr-select"></select></div>
+        <div class="field"><label>attribute key</label><input type="text" id="attrKey" placeholder="ami" /></div>
+        <div class="field"><label>variable name</label><input type="text" id="varName" placeholder="web_ami" /></div>
+      </div>
+      <div id="fields-split-file" class="hidden">
+        <div class="field"><label>file</label><select id="fileSelect"></select></div>
+        <div class="field"><label>threshold</label><input type="text" id="splitThreshold" value="500" style="width:80px" /></div>
+      </div>
+      <div id="fields-extract-module" class="hidden">
+        <div class="field"><label>resources to extract</label><div class="checklist" id="addrChecklist"></div></div>
+        <div class="field"><label>module name</label><input type="text" id="moduleName" placeholder="orders" /></div>
+      </div>
+      <div id="fields-dead-code" class="hidden">
+        <div class="field"><label>resource address</label><select class="addr-select"></select></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="proposeBtn" disabled>Propose &amp; verify</button>
+    </div>
+    <div id="proposeResult"></div>
+  </section>
+
+  <section class="panel">
+    <h2>4. Unify duplicates across environments</h2>
+    <p class="note">Compares the same resource (type + name) declared in two or more environment directories.</p>
+    <div class="row">
+      <div class="field">
+        <label>common root</label>
+        <input type="text" id="unifyRoot" style="min-width:340px" />
+      </div>
+      <div class="field">
+        <label>env dirs (comma-separated, relative to root)</label>
+        <input type="text" id="unifyEnvs" value="envs/dev,envs/prod" style="min-width:220px" />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button id="unifyBtn">Detect &amp; propose</button>
+      </div>
+    </div>
+    <div id="unifyResult"></div>
+  </section>
+
+</main>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const $all = (sel) => Array.from(document.querySelectorAll(sel));
+let currentDir = null;
+let currentResources = [];
+let currentFiles = [];
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || res.statusText);
+  return body;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function verdictBadge(v) {
+  return `<span class="badge verdict-big verdict-${v}">${v.replace(/_/g, " ")}</span>`;
+}
+
+function findingRow(f, key) {
+  const sev = f.severity;
+  return `<div style="margin:4px 0"><span class="badge sev-${sev}">${sev}</span> ` +
+    `<span class="mono">${escapeHtml(f.address || "")}</span>: ${escapeHtml(f.message)}` +
+    (f.recommended_command ? `<div class="note mono">-&gt; ${escapeHtml(f.recommended_command)}</div>` : "") +
+    `</div>`;
+}
+
+function fileWritesBlock(fileWrites, deletedFiles) {
+  let html = "";
+  for (const [path, content] of Object.entries(fileWrites || {})) {
+    html += `<div class="file-block"><div class="path mono">${escapeHtml(path)}</div><pre>${escapeHtml(content) || "(empty)"}</pre></div>`;
+  }
+  for (const path of deletedFiles || []) {
+    html += `<div class="file-block"><div class="path mono">DELETED: ${escapeHtml(path)}</div></div>`;
+  }
+  return html || '<p class="empty">no file changes</p>';
+}
+
+async function loadPresets() {
+  const data = await api("/api/presets");
+  const sel = $("#presetSelect");
+  sel.innerHTML = '<option value="">(choose a preset)</option>' +
+    data.presets.map(p => `<option value="${escapeHtml(p.path)}">${escapeHtml(p.label)}</option>`).join("");
+  if (data.presets.length) {
+    sel.value = data.presets[0].path;
+    $("#customPath").value = data.presets[0].path;
+    $("#unifyRoot").value = data.presets[0].path;
+  }
+}
+$("#presetSelect").addEventListener("change", () => {
+  if ($("#presetSelect").value) $("#customPath").value = $("#presetSelect").value;
+});
+
+async function loadDirectory() {
+  const dir = $("#customPath").value.trim();
+  if (!dir) return;
+  $("#loadStatus").textContent = "loading...";
+  try {
+    const data = await api(`/api/resources?directory=${encodeURIComponent(dir)}`);
+    currentDir = dir;
+    currentResources = data.resources;
+    currentFiles = data.files;
+    $("#loadStatus").textContent = `loaded ${data.resources.length} resources/data sources across ${data.files.length} file(s).`;
+    $("#scanBtn").disabled = false;
+    $("#proposeBtn").disabled = false;
+
+    $all(".addr-select").forEach(sel => {
+      sel.innerHTML = currentResources.map(r => `<option value="${escapeHtml(r.address)}">${escapeHtml(r.address)} (${escapeHtml(r.type)})</option>`).join("");
+    });
+    $("#fileSelect").innerHTML = currentFiles.map(f => `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join("");
+    $("#addrChecklist").innerHTML = currentResources.map(r =>
+      `<label><input type="checkbox" value="${escapeHtml(r.address)}" /> <span class="mono">${escapeHtml(r.address)}</span> <span class="muted">(${escapeHtml(r.type)})</span></label>`
+    ).join("");
+  } catch (e) {
+    $("#loadStatus").textContent = "error: " + e.message;
+    $("#scanBtn").disabled = true;
+    $("#proposeBtn").disabled = true;
+  }
+}
+$("#loadBtn").addEventListener("click", loadDirectory);
+
+async function runScan() {
+  if (!currentDir) return;
+  $("#scanSummary").textContent = "scanning...";
+  $("#scanResults").innerHTML = "";
+  try {
+    const data = await api("/api/scan", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory: currentDir, god_file_threshold: parseInt($("#scanThreshold").value || "500", 10) })
+    });
+    $("#scanSummary").textContent = `${data.resource_count} resources/data sources, ${data.variable_count} variables, ${data.findings.length} findings.`;
+    if (!data.findings.length) {
+      $("#scanResults").innerHTML = '<p class="empty">no anti-patterns found</p>';
+      return;
+    }
+    const rows = data.findings.map(f => `<tr>
+        <td><span class="badge sev-${f.severity}">${f.severity}</span></td>
+        <td class="mono">${escapeHtml(f.category)}</td>
+        <td class="mono">${escapeHtml(f.location)}</td>
+        <td>${escapeHtml(f.message)}</td>
+      </tr>`).join("");
+    $("#scanResults").innerHTML = `<table><thead><tr><th>severity</th><th>category</th><th>location</th><th>message</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    $("#scanSummary").textContent = "error: " + e.message;
+  }
+}
+$("#scanBtn").addEventListener("click", runScan);
+
+$("#opSelect").addEventListener("change", () => {
+  const op = $("#opSelect").value;
+  ["rename", "parameterize", "split-file", "extract-module", "dead-code"].forEach(o => {
+    $(`#fields-${o}`).classList.toggle("hidden", o !== op);
+  });
+});
+
+async function runPropose() {
+  if (!currentDir) return;
+  const op = $("#opSelect").value;
+  const req = { directory: currentDir, op };
+  if (op === "rename") {
+    req.address = $("#fields-rename .addr-select").value;
+    req.new_name = $("#renameTo").value;
+  } else if (op === "parameterize") {
+    req.address = $("#fields-parameterize .addr-select").value;
+    req.attr_key = $("#attrKey").value;
+    req.var_name = $("#varName").value;
+  } else if (op === "split-file") {
+    req.file_name = $("#fileSelect").value;
+    req.threshold = parseInt($("#splitThreshold").value || "500", 10);
+  } else if (op === "extract-module") {
+    req.addresses = $all("#addrChecklist input:checked").map(i => i.value);
+    req.module_name = $("#moduleName").value;
+  } else if (op === "dead-code") {
+    req.address = $("#fields-dead-code .addr-select").value;
+  }
+
+  $("#proposeResult").innerHTML = '<p class="note">verifying...</p>';
+  try {
+    const data = await api("/api/propose", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req)
+    });
+    const r = data.result;
+    let html = `<div style="margin:10px 0">${verdictBadge(r.verdict)}</div>`;
+    html += `<p>${escapeHtml(data.description)}</p>`;
+    if (data.human_review_reason) html += `<p class="note">${escapeHtml(data.human_review_reason)}</p>`;
+    html += r.findings.map(findingRow).join("") || '<p class="empty">no findings</p>';
+    html += `<details><summary>show generated file changes (${Object.keys(data.file_writes).length} written, ${data.deleted_files.length} deleted)</summary>${fileWritesBlock(data.file_writes, data.deleted_files)}</details>`;
+    $("#proposeResult").innerHTML = html;
+  } catch (e) {
+    $("#proposeResult").innerHTML = `<p style="color:var(--red)">error: ${escapeHtml(e.message)}</p>`;
+  }
+}
+$("#proposeBtn").addEventListener("click", runPropose);
+
+async function runUnify() {
+  const root = $("#unifyRoot").value.trim();
+  const envs = $("#unifyEnvs").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (!root || !envs.length) return;
+  $("#unifyResult").innerHTML = '<p class="note">detecting duplicates...</p>';
+  try {
+    const data = await api("/api/unify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ common_root: root, env_dirs: envs })
+    });
+    if (!data.groups.length) {
+      $("#unifyResult").innerHTML = '<p class="empty">no cross-environment duplicates found</p>';
+      return;
+    }
+    let html = "";
+    for (const g of data.groups) {
+      html += `<div class="panel" style="margin-top:10px;background:#111726">`;
+      html += `<div style="margin-bottom:6px">${verdictBadge(g.combined_verdict)} <span class="mono">${escapeHtml(g.resource_type)}.${escapeHtml(g.resource_name)}</span></div>`;
+      html += `<p>${escapeHtml(g.description)}</p>`;
+      html += `<p class="note">varying: ${g.varying_keys.map(escapeHtml).join(", ")}</p>`;
+      for (const [label, r] of Object.entries(g.per_environment)) {
+        html += `<div style="margin:6px 0"><strong>${escapeHtml(label)}</strong> ${verdictBadge(r.verdict)}</div>`;
+        html += r.findings.map(findingRow).join("");
+      }
+      html += `<details><summary>show generated file changes</summary>${fileWritesBlock(g.file_writes, [])}</details>`;
+      html += `</div>`;
+    }
+    $("#unifyResult").innerHTML = html;
+  } catch (e) {
+    $("#unifyResult").innerHTML = `<p style="color:var(--red)">error: ${escapeHtml(e.message)}</p>`;
+  }
+}
+$("#unifyBtn").addEventListener("click", runUnify);
+
+loadPresets().then(loadDirectory);
+</script>
+</body>
+</html>
