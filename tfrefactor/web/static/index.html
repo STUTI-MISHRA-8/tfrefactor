@@ -70,6 +70,29 @@
 
 <main>
 
+  <section class="panel" id="quickDemos">
+    <h2>Try it now - no setup required</h2>
+    <p class="note">Runs against the bundled example project: a deliberately messy 68-resource Terraform
+      codebase (multi-provider aliasing, a <span class="mono">random_id</span>, dynamic blocks, a
+      586-line god-file, duplicated resources across dev/prod). One click, nothing to install or type.</p>
+    <div class="row">
+      <button data-demo="compare-rename">Rename a resource: tool vs. by hand</button>
+      <button class="secondary" data-demo="scan">Scan for issues</button>
+      <button class="secondary" data-demo="extract-module">Extract a module</button>
+      <button class="secondary" data-demo="split-file">Split the god-file</button>
+      <button class="secondary" data-demo="dead-code">Remove dead code</button>
+      <button class="secondary" data-demo="unify">Unify duplicates (dev vs prod)</button>
+    </div>
+    <div id="quickDemoResult"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Point it at your own Terraform</h2>
+    <p class="note">Everything below runs the exact same engine against any directory - local use only
+      (the hosted demo above is sandboxed to the bundled project; run <span class="mono">tfrefactor dashboard</span>
+      locally to use these against your own code).</p>
+  </section>
+
   <section class="panel">
     <h2>1. Target directory</h2>
     <div class="row">
@@ -361,6 +384,102 @@ async function runUnify() {
   }
 }
 $("#unifyBtn").addEventListener("click", runUnify);
+
+// ---- one-click guided demos (fixed args, bundled example project) ----
+const DEMO_DIR = "tests/fixtures/messy_project";
+
+function resultBlock(title, r) {
+  return `<div style="margin:10px 0"><strong>${escapeHtml(title)}</strong> ${verdictBadge(r.verdict)}</div>` +
+    (r.findings.map(findingRow).join("") || '<p class="empty">no findings</p>');
+}
+
+async function runCompareRename() {
+  const [safe, unsafe] = await Promise.all([
+    api("/api/propose", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory: DEMO_DIR, op: "rename", address: "aws_instance.web", new_name: "web_server" })
+    }),
+    api("/api/demo/unsafe-rename", { method: "POST" }),
+  ]);
+  return `
+    <div style="display:flex; gap:16px; flex-wrap:wrap">
+      <div style="flex:1; min-width:320px">
+        <p class="note">tfrefactor propose rename (auto-generates the moved block)</p>
+        ${resultBlock(safe.description, safe.result)}
+      </div>
+      <div style="flex:1; min-width:320px">
+        <p class="note">Hand-edited: renamed the resource, forgot the moved block</p>
+        ${resultBlock(unsafe.description, unsafe.result)}
+      </div>
+    </div>
+    <p class="note">Same rename, same file. The only difference is whether a moved block was generated -
+    that's the difference between an empty plan and Terraform destroying and recreating the instance.</p>`;
+}
+
+async function runQuickScan() {
+  const data = await api("/api/scan", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ directory: DEMO_DIR, god_file_threshold: 500 })
+  });
+  const rows = data.findings.map(f => `<tr>
+      <td><span class="badge sev-${f.severity}">${f.severity}</span></td>
+      <td class="mono">${escapeHtml(f.category)}</td>
+      <td class="mono">${escapeHtml(f.location)}</td>
+      <td>${escapeHtml(f.message)}</td>
+    </tr>`).join("");
+  return `<p class="note">${data.resource_count} resources/data sources, ${data.variable_count} variables, ${data.findings.length} findings.</p>
+    <table><thead><tr><th>severity</th><th>category</th><th>location</th><th>message</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function runQuickPropose(op, extra) {
+  const data = await api("/api/propose", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ directory: DEMO_DIR, op, ...extra })
+  });
+  return resultBlock(data.description, data.result) +
+    (data.human_review_reason ? `<p class="note">${escapeHtml(data.human_review_reason)}</p>` : "") +
+    `<details><summary>show generated file changes (${Object.keys(data.file_writes).length} written, ${data.deleted_files.length} deleted)</summary>${fileWritesBlock(data.file_writes, data.deleted_files)}</details>`;
+}
+
+async function runQuickUnify() {
+  const data = await api("/api/unify", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ common_root: DEMO_DIR, env_dirs: ["envs/dev", "envs/prod"] })
+  });
+  return data.groups.map(g => `
+    <div style="margin:10px 0">
+      <div>${verdictBadge(g.combined_verdict)} <span class="mono">${escapeHtml(g.resource_type)}.${escapeHtml(g.resource_name)}</span>
+      <span class="note">- varying: ${g.varying_keys.map(escapeHtml).join(", ")}</span></div>
+      <p class="note">${escapeHtml(g.description)}</p>
+    </div>`).join("") || '<p class="empty">no cross-environment duplicates found</p>';
+}
+
+const QUICK_DEMOS = {
+  "compare-rename": runCompareRename,
+  "scan": runQuickScan,
+  "extract-module": () => runQuickPropose("extract-module", {
+    addresses: ["aws_sqs_queue.orders_queue", "aws_sqs_queue.orders_dlq", "aws_cloudwatch_log_group.orders", "aws_iam_role.orders_exec"],
+    module_name: "orders",
+  }),
+  "split-file": () => runQuickPropose("split-file", { file_name: "services.tf", threshold: 500 }),
+  "dead-code": () => runQuickPropose("dead-code", { address: "aws_iam_role.orphan_role" }),
+  "unify": runQuickUnify,
+};
+
+$all("#quickDemos button[data-demo]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const key = btn.dataset.demo;
+    $all("#quickDemos button[data-demo]").forEach(b => b.disabled = true);
+    $("#quickDemoResult").innerHTML = '<p class="note">running...</p>';
+    try {
+      $("#quickDemoResult").innerHTML = await QUICK_DEMOS[key]();
+    } catch (e) {
+      $("#quickDemoResult").innerHTML = `<p style="color:var(--red)">error: ${escapeHtml(e.message)}</p>`;
+    } finally {
+      $all("#quickDemos button[data-demo]").forEach(b => b.disabled = false);
+    }
+  });
+});
 
 loadPresets().then(loadDirectory);
 </script>

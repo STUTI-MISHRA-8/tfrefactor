@@ -10,6 +10,7 @@ Non-negotiables enforced here, not just documented:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -46,6 +47,10 @@ def dashboard(host, port):
         import uvicorn
     except ImportError:
         raise click.ClickException("dashboard requires the 'web' extra: pip install -e '.[web]'")
+    # Launched locally via the CLI = trusted, operator-controlled use - unlike
+    # the hosted public demo, allow browsing any directory, not just the
+    # bundled fixture.
+    os.environ.setdefault("TFREFACTOR_ALLOW_ANY_PATH", "1")
     click.echo(f"Serving dashboard at http://{host}:{port} (read-only - nothing here writes to disk)")
     uvicorn.run("tfrefactor.web.app:app", host=host, port=port)
 

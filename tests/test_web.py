@@ -69,6 +69,20 @@ def test_propose_dead_code_is_human_review(messy_root):
     assert data["result"]["verdict"] == "HUMAN_REVIEW_REQUIRED"
 
 
+def test_directory_outside_repo_is_rejected_by_default(tmp_path):
+    """The hosted public demo must not read arbitrary filesystem paths."""
+    r = client.get(f"/api/resources?directory={tmp_path}")
+    assert r.status_code == 403
+
+
+def test_demo_unsafe_rename_shows_the_blocker():
+    r = client.post("/api/demo/unsafe-rename")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["result"]["verdict"] == "NOT_VERIFIED"
+    assert any("unrecorded rename" in f["message"] for f in data["result"]["findings"])
+
+
 def test_unify_endpoint(messy_root):
     r = client.post(
         "/api/unify",

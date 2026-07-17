@@ -6,6 +6,8 @@ auto-applied" non-negotiable.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -29,20 +31,37 @@ from tfrefactor.refactors.unify_duplicates import (
     propose_unify,
     verify_unify_proposal,
 )
+from tfrefactor.verify import verify_no_op
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "messy_project"
+
+# This app is served publicly (Vercel) as a demo of the CLI, so by default it
+# only allows browsing the bundled fixture - not arbitrary paths on whatever
+# machine happens to be running the process. `tfrefactor dashboard` (the
+# local CLI command) sets this env var itself, since a *locally launched*
+# dashboard operating on the operator's own filesystem is the trusted,
+# intended use case; the hosted public demo never sets it.
+ALLOW_ANY_PATH = os.environ.get("TFREFACTOR_ALLOW_ANY_PATH") == "1"
 
 app = FastAPI(title="tfrefactor dashboard")
 
 
 def _resolve(directory: str) -> Path:
     p = Path(directory)
-    if not p.is_absolute():
-        p = (REPO_ROOT / directory).resolve()
-    if not p.is_dir():
+    candidate = p.resolve() if p.is_absolute() else (REPO_ROOT / directory).resolve()
+    if not ALLOW_ANY_PATH:
+        try:
+            candidate.relative_to(REPO_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(
+                403,
+                "This hosted demo only browses the bundled example project. Run "
+                "`TFREFACTOR_ALLOW_ANY_PATH=1 tfrefactor dashboard` locally to point it at your own Terraform.",
+            )
+    if not candidate.is_dir():
         raise HTTPException(404, f"not a directory: {directory}")
-    return p
+    return candidate
 
 
 def _finding_dict(f):
@@ -186,6 +205,31 @@ def unify(req: UnifyRequest):
             }
         )
     return {"groups": out}
+
+
+@app.post("/api/demo/unsafe-rename")
+def demo_unsafe_rename():
+    """The one comparison that makes the whole tool's value obvious: rename
+    a resource by hand, the way an engineer actually would, and forget the
+    `moved` block. This mirrors `propose rename` exactly except it skips the
+    tool's own safety step, so the contrast is real, not staged."""
+    before = parse_module(FIXTURE_ROOT)
+    with tempfile.TemporaryDirectory() as staging:
+        staged = Path(staging) / "staged"
+        shutil.copytree(FIXTURE_ROOT, staged)
+        main_tf = staged / "main.tf"
+        text = main_tf.read_text(encoding="utf-8")
+        new_text = text.replace('resource "aws_instance" "web"', 'resource "aws_instance" "web_server"')
+        if new_text == text:
+            raise HTTPException(500, "demo fixture changed shape unexpectedly")
+        main_tf.write_text(new_text, encoding="utf-8")
+        after = parse_module(staged)
+        result = verify_no_op(before, after)
+    return {
+        "description": "Hand-renamed aws_instance.web -> aws_instance.web_server directly in the .tf file, "
+        "with no moved block - the way this mistake actually happens in practice.",
+        "result": _result_dict(result),
+    }
 
 
 static_dir = Path(__file__).parent / "static"
