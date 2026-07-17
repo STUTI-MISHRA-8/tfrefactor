@@ -19,16 +19,27 @@ tfrefactor unify-duplicates tests/fixtures/messy_project envs/dev envs/prod
 
 ## Dashboard
 
+**Live demo: [tfrefactor.vercel.app](https://tfrefactor.vercel.app)** - one-click
+buttons run every operation against the bundled example project, no install,
+no typing. The flagship button renames a resource two ways side by side: the
+tool's version (moved block auto-generated) vs. a hand-edit that forgets it
+- the second comes back `NOT_VERIFIED` with the exact blocker.
+
 ```
 pip install -e ".[web]"
 tfrefactor dashboard
 ```
 
-Opens a local, **read-only** dashboard (FastAPI + a single dependency-free
-HTML/JS page, no Node toolchain) for browsing scan findings and refactor
-proposals with their verification verdicts. There is deliberately no "apply"
-button anywhere in it - applying a refactor stays a `tfrefactor propose ...
---apply` action on the CLI, per non-negotiable #3. See `tfrefactor/web/`.
+Run it locally to point it at your own Terraform. It's a **read-only**
+dashboard (FastAPI + a single dependency-free HTML/JS page, no Node
+toolchain, deployed to Vercel as a serverless function from `api/index.py`)
+for browsing scan findings and refactor proposals with their verification
+verdicts. There is deliberately no "apply" button anywhere in it - applying
+a refactor stays a `tfrefactor propose ... --apply` action on the CLI, per
+non-negotiable #3. The hosted deployment only browses the bundled fixture
+(`TFREFACTOR_ALLOW_ANY_PATH` is unset there); the local CLI command sets
+that env var itself so you can point it at any directory. See
+`tfrefactor/web/`.
 
 ## Non-negotiables (enforced in code, not just documented)
 
@@ -216,7 +227,7 @@ pip install -e ".[dev,web]"
 pytest
 ```
 
-43 tests cover: block-splitter roundtrip fidelity on real messy fixtures,
+45 tests cover: block-splitter roundtrip fidelity on real messy fixtures,
 reference/provider/for_each extraction, all four verdict classes (including
 the stale-moved-block regression), every refactor operation end-to-end
 through the verifier, and the dashboard's API (confirmed to never write to
